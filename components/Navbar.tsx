@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { MessageSquare, X } from "lucide-react";
@@ -110,31 +111,39 @@ export function Navbar() {
     setShowOnboarding(false);
   }
 
-  function handleChatClick() {
-    router.push("/chat");
+  function handleWorkspaceClick() {
+    router.push("/workspace");
   }
 
   return (
     <>
       <nav className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-8 h-14 flex items-center justify-between">
-          <button
-            onClick={() => router.push("/")}
-            className="font-semibold text-base tracking-tight hover:text-primary transition-colors"
-          >
-            Personal Canvas
-          </button>
+        <div className="max-w-7xl mx-auto px-8 h-14 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4 min-w-0">
+            <button
+              onClick={() => router.push("/")}
+              className="font-semibold text-base tracking-tight hover:text-primary transition-colors shrink-0"
+            >
+              Personal Canvas
+            </button>
+            <Link
+              href="/"
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors hidden sm:inline"
+            >
+              Dashboard
+            </Link>
+          </div>
 
           {mounted && (
             <motion.button
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ delay: 0.1, duration: 0.2 }}
-              onClick={handleChatClick}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+              onClick={handleWorkspaceClick}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity shrink-0"
             >
               <MessageSquare className="w-4 h-4" />
-              {botName ? `Chat with ${botName}` : "Chat"}
+              {botName ? `Workspace with ${botName}` : "Workspace"}
             </motion.button>
           )}
         </div>
