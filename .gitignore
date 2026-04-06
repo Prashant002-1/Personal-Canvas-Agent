@@ -74,6 +74,8 @@ Desktop.ini
 .tessl/
 tessl.json
 .worktrees/
+.agents/
+.codex/
 
 !README.md
 

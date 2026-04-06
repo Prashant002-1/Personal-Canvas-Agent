@@ -36,6 +36,7 @@ function extractMessageText(message: UIMessage): string {
 }
 
 const TOOL_LABELS: Record<string, string> = {
+  setWorkspaceDecision: "Workspace decision",
   getDashboardSnapshot: "Dashboard",
   getCourseOverview: "Course overview",
   getCourseTimeline: "Timeline",
@@ -43,6 +44,8 @@ const TOOL_LABELS: Record<string, string> = {
   getSubmissionInsights: "Submissions",
   searchAssignments: "Searching",
   getTodayPlanSnapshot: "Today's plan",
+  getWeeklyWorkload: "Week map",
+  getAssignmentExecutionContext: "Assignment focus",
   saveMemory: "Saving to memory",
   searchMemories: "Recalling memory",
   getPlannerEvents: "Planner events",
@@ -89,14 +92,24 @@ export function ChatInterface({
   chatId,
   contextData,
   botName,
+  variant = "page",
+  onMessagesChange,
+  externalMessage,
 }: {
   chatId: string;
   contextData: string;
   botName?: string | null;
+  variant?: "page" | "workspace";
+  onMessagesChange?: (messages: UIMessage[]) => void;
+  externalMessage?: { key: string; text: string } | null;
 }) {
   const [input, setInput] = useState("");
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const onMessagesChangeRef = useRef(onMessagesChange);
+  useEffect(() => {
+    onMessagesChangeRef.current = onMessagesChange;
+  });
   const { messages, sendMessage, status, error, setMessages } = useChat({
     id: chatId,
     transport: new DefaultChatTransport({
@@ -113,10 +126,23 @@ export function ChatInterface({
   });
 
   const isLoading = status === "submitted" || status === "streaming";
+  const lastExternalKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    onMessagesChangeRef.current?.(messages);
+  }, [messages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, status]);
+
+  useEffect(() => {
+    if (!externalMessage) return;
+    if (lastExternalKeyRef.current === externalMessage.key) return;
+    if (status !== "ready") return;
+    lastExternalKeyRef.current = externalMessage.key;
+    void sendMessage({ text: externalMessage.text });
+  }, [externalMessage, sendMessage, status]);
 
   async function fetchSession(ignoreSignal?: { current: boolean }) {
     const res = await fetch(`/api/chat?chatId=${encodeURIComponent(chatId)}`);
@@ -134,7 +160,9 @@ export function ChatInterface({
 
   useEffect(() => {
     const signal = { current: false };
-    fetchSession(signal);
+    queueMicrotask(() => {
+      void fetchSession(signal);
+    });
     return () => { signal.current = true; };
   }, [chatId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -142,7 +170,9 @@ export function ChatInterface({
   const prevStatus = useRef(status);
   useEffect(() => {
     if (prevStatus.current !== "ready" && status === "ready") {
-      fetchSession();
+      queueMicrotask(() => {
+        void fetchSession();
+      });
     }
     prevStatus.current = status;
   }, [status]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -163,12 +193,28 @@ export function ChatInterface({
     ? Math.max(0, sessionMeta.compactionThreshold - sessionMeta.messageCount)
     : null;
 
+  const rootClass =
+    variant === "page"
+      ? "flex flex-col min-h-[calc(100vh-3.5rem)]"
+      : "flex flex-col h-full min-h-0";
+  const messagesScrollClass =
+    variant === "page" ? "flex-1 pb-28" : "flex-1 min-h-0 overflow-y-auto";
+  const threadInnerClass =
+    variant === "page"
+      ? "max-w-3xl mx-auto px-6 py-8 space-y-6"
+      : "max-w-3xl mx-auto px-4 py-3 space-y-4";
+
   return (
-    <div className="flex flex-col min-h-[calc(100vh-3.5rem)]">
-      {/* Messages */}
-      <div className="flex-1 pb-28">
+    <div className={rootClass}>
+      <div className={messagesScrollClass}>
         {visibleMessages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-[60vh] text-center px-6">
+          <div
+            className={
+              variant === "page"
+                ? "flex flex-col items-center justify-center h-[60vh] text-center px-6"
+                : "flex flex-col items-center justify-center min-h-[120px] text-center px-4 py-6"
+            }
+          >
             <motion.div
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
@@ -177,14 +223,18 @@ export function ChatInterface({
               <div className="w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center mb-5 mx-auto">
                 <Sparkles className="w-6 h-6 text-primary" />
               </div>
-              <h2 className="text-xl font-semibold mb-2">{botName ? `Hey, I'm ${botName}` : "AI Assistant"}</h2>
-              <p className="text-muted-foreground max-w-xs leading-relaxed">
-                Ask about deadlines, get study strategies, or talk through your coursework.
+              <h2 className="text-xl font-semibold mb-2">
+                {botName ? `Hey, I'm ${botName}` : "AI Assistant"}
+              </h2>
+              <p className="text-muted-foreground max-w-xs leading-relaxed text-sm">
+                {variant === "workspace"
+                  ? "The canvas above updates from tools. Ask for your dashboard, a course, or today's plan."
+                  : "Ask about deadlines, get study strategies, or talk through your coursework."}
               </p>
             </motion.div>
           </div>
         ) : (
-          <div className="max-w-3xl mx-auto px-6 py-8 space-y-6">
+          <div className={threadInnerClass}>
             {/* Compaction divider — shown when prior context was summarized */}
             {hasSummary && (
               <motion.div
@@ -279,8 +329,13 @@ export function ChatInterface({
         )}
       </div>
 
-      {/* Sticky input bar */}
-      <div className="fixed bottom-0 left-0 right-0 border-t bg-background/80 backdrop-blur-md px-6 pt-3 pb-4">
+      <div
+        className={
+          variant === "page"
+            ? "fixed bottom-0 left-0 right-0 border-t bg-background/80 backdrop-blur-md px-6 pt-3 pb-4"
+            : "shrink-0 border-t border-border/60 bg-background/95 backdrop-blur-sm px-4 pt-2 pb-3"
+        }
+      >
         {sessionMeta && visibleMessages.length > 0 && (
           <div className="max-w-3xl mx-auto flex items-center gap-2 mb-2">
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground/50">

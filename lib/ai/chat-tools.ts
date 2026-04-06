@@ -2,6 +2,11 @@ import { tool } from "ai";
 import { z } from "zod";
 import { query } from "@/lib/db";
 import {
+  workspaceDecisionInputSchema,
+  type WorkspaceDecision,
+} from "@/lib/workspace/decision-schema";
+import { validateWorkspaceDecision } from "@/lib/workspace/validation";
+import {
   listPlannerEvents,
   loadChatSession,
   searchChatMemories,
@@ -13,6 +18,17 @@ type ToolPayload<T> = {
   uiTarget: string;
   summary: string;
   payload: T;
+};
+
+type ScheduleItem = {
+  id: string;
+  kind: "assignment" | "quiz" | "discussion" | "calendar_event";
+  title: string;
+  at: string | null;
+  courseId?: number | null;
+  courseCode?: string | null;
+  assignmentId?: number | null;
+  htmlUrl?: string | null;
 };
 
 const tableExistsCache = new Map<string, boolean>();
@@ -77,8 +93,307 @@ async function fetchGradeSignal(courseId: number) {
   return result.rows[0] ?? null;
 }
 
+function startOfDay(value: Date): Date {
+  const next = new Date(value);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function dayKey(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function dayLabel(value: Date): string {
+  return value.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function createWeekBuckets(days: number) {
+  const today = startOfDay(new Date());
+  return Array.from({ length: days }, (_, index) => {
+    const date = new Date(today);
+    date.setDate(today.getDate() + index);
+    return {
+      dateKey: dayKey(date),
+      label: dayLabel(date),
+      isoDate: date.toISOString(),
+      items: [] as ScheduleItem[],
+    };
+  });
+}
+
+async function fetchWeeklyWorkload(days: number) {
+  const buckets = createWeekBuckets(days);
+  const bucketMap = new Map(buckets.map((bucket) => [bucket.dateKey, bucket]));
+
+  const assignments = await query(
+    `SELECT a.id, a.name, a.due_at, c.id AS course_id, c.code AS course_code, a.html_url
+     FROM assignments a
+     JOIN courses c ON c.id = a.course_id
+     WHERE a.due_at >= date_trunc('day', NOW())
+       AND a.due_at < date_trunc('day', NOW()) + ($1::int || ' days')::interval
+     ORDER BY a.due_at ASC`,
+    [days]
+  );
+
+  for (const row of assignments.rows) {
+    if (!row.due_at) continue;
+    const key = dayKey(new Date(row.due_at));
+    const bucket = bucketMap.get(key);
+    if (!bucket) continue;
+    bucket.items.push({
+      id: `assignment-${row.id}`,
+      kind: "assignment",
+      title: row.name,
+      at: row.due_at,
+      courseId: row.course_id,
+      courseCode: row.course_code,
+      assignmentId: row.id,
+      htmlUrl: row.html_url,
+    });
+  }
+
+  if (await tableExists("quizzes")) {
+    const quizzes = await query(
+      `SELECT q.id, q.title, q.due_at, q.assignment_id, c.id AS course_id, c.code AS course_code, q.html_url
+       FROM quizzes q
+       JOIN courses c ON c.id = q.course_id
+       WHERE q.due_at >= date_trunc('day', NOW())
+         AND q.due_at < date_trunc('day', NOW()) + ($1::int || ' days')::interval
+       ORDER BY q.due_at ASC`,
+      [days]
+    );
+
+    for (const row of quizzes.rows) {
+      if (!row.due_at) continue;
+      const key = dayKey(new Date(row.due_at));
+      const bucket = bucketMap.get(key);
+      if (!bucket) continue;
+      bucket.items.push({
+        id: `quiz-${row.id}`,
+        kind: "quiz",
+        title: row.title,
+        at: row.due_at,
+        courseId: row.course_id,
+        courseCode: row.course_code,
+        assignmentId: row.assignment_id,
+        htmlUrl: row.html_url,
+      });
+    }
+  }
+
+  if (await tableExists("discussions")) {
+    const discussions = await query(
+      `SELECT d.id, d.title, COALESCE(d.todo_date, d.lock_at, d.posted_at) AS action_at, c.id AS course_id, c.code AS course_code, d.html_url
+       FROM discussions d
+       JOIN courses c ON c.id = d.course_id
+       WHERE COALESCE(d.todo_date, d.lock_at, d.posted_at) >= date_trunc('day', NOW())
+         AND COALESCE(d.todo_date, d.lock_at, d.posted_at) < date_trunc('day', NOW()) + ($1::int || ' days')::interval
+       ORDER BY action_at ASC`,
+      [days]
+    );
+
+    for (const row of discussions.rows) {
+      if (!row.action_at) continue;
+      const key = dayKey(new Date(row.action_at));
+      const bucket = bucketMap.get(key);
+      if (!bucket) continue;
+      bucket.items.push({
+        id: `discussion-${row.id}`,
+        kind: "discussion",
+        title: row.title,
+        at: row.action_at,
+        courseId: row.course_id,
+        courseCode: row.course_code,
+        htmlUrl: row.html_url,
+      });
+    }
+  }
+
+  if (await tableExists("calendar_events")) {
+    const events = await query(
+      `SELECT e.id, e.title, e.start_at, e.assignment_id, e.course_id, c.code AS course_code, e.html_url
+       FROM calendar_events e
+       LEFT JOIN courses c ON c.id = e.course_id
+       WHERE e.start_at >= date_trunc('day', NOW())
+         AND e.start_at < date_trunc('day', NOW()) + ($1::int || ' days')::interval
+       ORDER BY e.start_at ASC`,
+      [days]
+    );
+
+    for (const row of events.rows) {
+      if (!row.start_at) continue;
+      const key = dayKey(new Date(row.start_at));
+      const bucket = bucketMap.get(key);
+      if (!bucket) continue;
+      bucket.items.push({
+        id: `event-${row.id}`,
+        kind: "calendar_event",
+        title: row.title,
+        at: row.start_at,
+        courseId: row.course_id,
+        courseCode: row.course_code,
+        assignmentId: row.assignment_id,
+        htmlUrl: row.html_url,
+      });
+    }
+  }
+
+  const daysWithLoad = buckets.map((bucket) => ({
+    ...bucket,
+    loadScore: bucket.items.length,
+  }));
+
+  let busiestDay = null as null | {
+    dateKey: string;
+    label: string;
+    loadScore: number;
+  };
+
+  for (const bucket of daysWithLoad) {
+    if (!busiestDay || bucket.loadScore > busiestDay.loadScore) {
+      busiestDay = {
+        dateKey: bucket.dateKey,
+        label: bucket.label,
+        loadScore: bucket.loadScore,
+      };
+    }
+  }
+
+  return {
+    days: daysWithLoad,
+    busiestDay,
+    totalItems: daysWithLoad.reduce((sum, bucket) => sum + bucket.items.length, 0),
+  };
+}
+
+async function fetchAssignmentExecutionContext(assignmentId: number) {
+  const assignmentResult = await query(
+    `SELECT a.id, a.course_id, a.assignment_group_id, a.name, a.description, a.due_at, a.points_possible, a.workflow_state, a.html_url,
+            c.name AS course_name, c.code AS course_code
+     FROM assignments a
+     JOIN courses c ON c.id = a.course_id
+     WHERE a.id = $1`,
+    [assignmentId]
+  );
+
+  const assignment = assignmentResult.rows[0];
+  if (!assignment) {
+    throw new Error(`Assignment ${assignmentId} not found.`);
+  }
+
+  const submission =
+    (await tableExists("submissions")) &&
+    (
+      await query(
+        `SELECT submitted_at, graded_at, score, grade, late, missing, workflow_state
+         FROM submissions
+         WHERE assignment_id = $1
+         ORDER BY graded_at DESC NULLS LAST, submitted_at DESC NULLS LAST
+         LIMIT 1`,
+        [assignmentId]
+      )
+    ).rows[0];
+
+  const moduleRow =
+    (await tableExists("module_items")) &&
+    (
+      await query(
+        `SELECT m.id, m.name
+         FROM module_items mi
+         JOIN modules m ON m.id = mi.module_id
+         WHERE mi.course_id = $1
+           AND mi.content_id = $2
+           AND mi.type = 'Assignment'
+         ORDER BY m.position ASC
+         LIMIT 1`,
+        [assignment.course_id, assignmentId]
+      )
+    ).rows[0];
+
+  const relatedAssignments = (
+    await query(
+      `SELECT id, name, due_at, points_possible
+       FROM assignments
+       WHERE course_id = $1
+         AND id <> $2
+         AND (due_at IS NULL OR due_at >= NOW())
+       ORDER BY due_at ASC NULLS LAST
+       LIMIT 4`,
+      [assignment.course_id, assignmentId]
+    )
+  ).rows;
+
+  const pages =
+    (await tableExists("pages")) &&
+    (
+      await query(
+        `SELECT url, title, updated_at_canvas
+         FROM pages
+         WHERE course_id = $1
+         ORDER BY updated_at_canvas DESC NULLS LAST
+         LIMIT 3`,
+        [assignment.course_id]
+      )
+    ).rows;
+
+  const files =
+    (await tableExists("files")) &&
+    (
+      await query(
+        `SELECT id, display_name, filename, url, updated_at_canvas
+         FROM files
+         WHERE course_id = $1
+         ORDER BY updated_at_canvas DESC NULLS LAST
+         LIMIT 3`,
+        [assignment.course_id]
+      )
+    ).rows;
+
+  const announcements = await fetchAnnouncements(3, assignment.course_id);
+
+  return {
+    assignment,
+    course: {
+      id: assignment.course_id,
+      name: assignment.course_name,
+      code: assignment.course_code,
+    },
+    submission: submission || null,
+    module: moduleRow || null,
+    relatedAssignments,
+    resources: {
+      pages: pages || [],
+      files: files || [],
+    },
+    announcements,
+  };
+}
+
 export function createChatTools({ chatId }: { chatId: string }) {
   return {
+    setWorkspaceDecision: tool({
+      description:
+        "Choose the workspace goal, view, panels, actions, and evidence for this turn. Call this before data tools so the UI knows what the agent is trying to accomplish.",
+      inputSchema: workspaceDecisionInputSchema,
+      execute: async (input): Promise<ToolPayload<WorkspaceDecision>> => {
+        const validation = validateWorkspaceDecision(input);
+        if (!validation.success) {
+          throw new Error(validation.errors.join(" "));
+        }
+
+        const summary = `Workspace decision: ${input.view} for ${input.goal.replaceAll("_", " ")}.`;
+        return {
+          uiTarget: "workspace.decision",
+          summary,
+          payload: input,
+        };
+      },
+    }),
+
     getDashboardSnapshot: tool({
       description:
         "Get dashboard-ready course, deadline, and announcement snapshot data for UI cards.",
@@ -457,6 +772,56 @@ export function createChatTools({ chatId }: { chatId: string }) {
             overdue: overdue.rows,
             recentAnnouncements,
           },
+        };
+      },
+    }),
+
+    getWeeklyWorkload: tool({
+      description:
+        "Get a 7-day workload map from assignments, quizzes, discussions, and calendar events for week-based execution planning.",
+      inputSchema: z.object({
+        days: z.number().int().min(5).max(10).default(7),
+      }),
+      execute: async ({ days }): Promise<
+        ToolPayload<{
+          days: Array<{
+            dateKey: string;
+            label: string;
+            isoDate: string;
+            loadScore: number;
+            items: ScheduleItem[];
+          }>;
+          busiestDay: {
+            dateKey: string;
+            label: string;
+            loadScore: number;
+          } | null;
+          totalItems: number;
+        }>
+      > => {
+        const workload = await fetchWeeklyWorkload(days);
+        return {
+          uiTarget: "planner.weekly-workload",
+          summary: `Loaded ${workload.totalItems} workload items across the next ${days} days.`,
+          payload: workload,
+        };
+      },
+    }),
+
+    getAssignmentExecutionContext: tool({
+      description:
+        "Get a focused execution context for one assignment, including submission state, nearby work, module placement, and supporting resources.",
+      inputSchema: z.object({
+        assignmentId: z.number().int().positive(),
+      }),
+      execute: async ({ assignmentId }): Promise<
+        ToolPayload<Awaited<ReturnType<typeof fetchAssignmentExecutionContext>>>
+      > => {
+        const payload = await fetchAssignmentExecutionContext(assignmentId);
+        return {
+          uiTarget: "assignment.execution",
+          summary: `Loaded execution context for ${payload.assignment.name}.`,
+          payload,
         };
       },
     }),

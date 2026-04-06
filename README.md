@@ -14,7 +14,8 @@ Canvas is the source of truth for a student's academic life — deadlines, sylla
 
 - **Daily briefing**: On load, the AI scans upcoming deadlines, overdue work, and recent announcements and generates a personalized summary. It knows when two midterms cluster in the same week.
 - **Course intelligence**: For each course, the AI reads the syllabus, current grade, submission history, and active module — then generates next steps, effort estimates, and curated study resources.
-- **Conversational agent**: A multi-step AI agent with 9 typed tools that queries your live Canvas data and renders structured UI cards alongside its responses.
+- **Agentic study workspace** (`/workspace`): The agent explicitly chooses a `goal`, `view`, `panels`, `actions`, `reason`, and `evidence`, then fills that layout with grounded tool data. The frontend validates those choices and restores the session after refresh.
+- **Conversational agent**: A multi-step AI agent with typed tools that queries live Canvas data and drives daily-execution views like `todayDesk`, `weekMap`, and `assignmentFocus`.
 - **Persistent memory**: Auto-extracts preferences and context from your messages. Stores them as searchable memories via vector embeddings. Recalls them in future sessions without you repeating yourself.
 - **Reactive planner**: Every session recomputes a live snapshot — due today, overdue, today's events, recent announcements — and injects it into the AI's context automatically.
 
@@ -38,9 +39,11 @@ Canvas is the source of truth for a student's academic life — deadlines, sylla
 
 ### Tool-Calling Agent
 
-`/api/chat` runs a `streamText` loop with up to 8 steps per turn. Nine typed tools — each backed by a parameterized SQL template, no model-generated SQL — query the Canvas-mirrored schema and return structured payloads. Each payload includes a `uiTarget` field so the frontend renders the right component automatically.
+`/api/chat` runs a `streamText` loop with up to 8 steps per turn. Tools are backed by parameterized SQL templates (no model-generated SQL) and return structured payloads. The agent now emits an explicit workspace decision first (`goal`, `focus`, `view`, `panels`, `actions`, `reason`, `evidence`), then calls the data tools needed to support that view. The workspace validates the decision, reduces the streamed tool outputs into view state, and renders only registered layouts/panels.
 
-Tools: `getDashboardSnapshot`, `getCourseOverview`, `getCourseTimeline`, `getCourseResources`, `getSubmissionInsights`, `searchAssignments`, `getTodayPlanSnapshot`, `saveMemory`, `searchMemories`.
+Core workspace tools: `setWorkspaceDecision`, `getTodayPlanSnapshot`, `getWeeklyWorkload`, `getAssignmentExecutionContext`, `searchAssignments`.
+
+Additional tools: `getDashboardSnapshot`, `getCourseOverview`, `getCourseTimeline`, `getCourseResources`, `getSubmissionInsights`, `saveMemory`, `searchMemories`, `getPlannerEvents`.
 
 ### Session Persistence
 
@@ -89,7 +92,7 @@ psql postgres://canvas:canvas@localhost:5432/canvas -f Seed.sql
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000). Use **Workspace** in the nav (or `/workspace`) for the agent-driven canvas; `/` remains the classic course dashboard.
 
 ### Backfill Embeddings (optional but recommended)
 
@@ -114,7 +117,7 @@ app/
   courses/             # Course pages
 lib/
   ai/
-    chat-tools.ts      # 9 typed tools
+    chat-tools.ts      # Typed tools for decisions, planner data, courses, and memory
     chat-store.ts      # Session persistence, memory, planner
     embeddings.ts      # Embedding generation
   db.ts                # Postgres pool
