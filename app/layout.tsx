@@ -3,8 +3,8 @@ import "./globals.css";
 import { Navbar } from "@/components/Navbar";
 
 export const metadata: Metadata = {
-  title: "Personal Canvas",
-  description: "AI-powered study planner",
+  title: "Kairos",
+  description: "The right thing, at the right moment. An AI study partner that knows your courses, remembers you, and tells you what to do next.",
 };
 
 export default function RootLayout({

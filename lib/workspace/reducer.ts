@@ -532,7 +532,6 @@ export function reduceWorkspaceFromMessages(
   }
 
   const requiredDataTargets = VIEW_DATA_REQUIREMENTS[decision.view];
-  const missing = requiredDataTargets.filter((target) => !(target in dataByTarget));
   const panelsBySlot = buildPanels(decision, dataByTarget, toolSummaries);
 
   return {
@@ -546,9 +545,6 @@ export function reduceWorkspaceFromMessages(
     dataTargets,
     requiredDataTargets,
     toolSummaries,
-    validationErrors: [
-      ...validationErrors,
-      ...missing.map((target) => `Missing data for "${target}".`),
-    ],
+    validationErrors,
   };
 }

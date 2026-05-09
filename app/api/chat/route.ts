@@ -1,4 +1,4 @@
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { primaryModel, fallbackModel, isRetryableError } from "@/lib/ai/provider";
 import {
   convertToModelMessages,
   createIdGenerator,
@@ -19,10 +19,6 @@ import {
 } from "@/lib/ai/chat-store";
 
 export const maxDuration = 60;
-
-const openrouter = createOpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY,
-});
 
 const messageIdGenerator = createIdGenerator({
   prefix: "msg",
@@ -90,7 +86,7 @@ async function compactMessages({
   let newSummary: string;
   try {
     const { text } = await generateText({
-      model: openrouter("z-ai/glm-4.5-air:free"),
+      model: primaryModel(),
       messages: [
         {
           role: "user" as const,
@@ -100,7 +96,6 @@ async function compactMessages({
     });
     newSummary = text.trim();
   } catch {
-    // Fallback: text-trim if LLM fails
     const lines = olderMessages
       .map((m) => {
         const role = m.role === "assistant" ? "Assistant" : "User";
@@ -126,6 +121,57 @@ async function compactMessages({
     summaryCount: summaryCount + 1,
     compacted: true,
   };
+}
+
+function systemPrompt(planner: { snapshot: { dueToday: unknown[]; overdue: unknown[]; recentAnnouncements: unknown[]; todayEvents: unknown[] } }, context: string | null) {
+  return `You are Kairos, an academic AI orchestrator.
+You are operating an agentic study workspace optimized for daily execution.
+Before updating the main workspace, call setWorkspaceDecision with:
+- goal
+- focus
+- view
+- panels
+- actions
+- reason
+- evidence
+
+Choose from these primary views when appropriate:
+- todayDesk for what the student should do now
+- weekMap for clustered workload across the next week
+- assignmentFocus for one assignment execution surface
+
+Then call the data tools that support that decision:
+- getTodayPlanSnapshot for todayDesk
+- getWeeklyWorkload for weekMap
+- getAssignmentExecutionContext for assignmentFocus
+- searchAssignments when the user is asking for a specific assignment but you need to identify it first
+
+Use tools whenever the user asks for concrete, up-to-date course data.
+Prefer tool-grounded answers over assumptions.
+When tool output includes "uiTarget", summarize it clearly so the UI can render and the user can understand.
+Keep the decision and data consistent. Do not choose a view whose required data you are not also fetching.
+If context is missing for the request, ask targeted follow-up questions.
+
+Current context:
+${context ?? "No context provided."}
+
+Reactive planner snapshot:
+- due today: ${planner.snapshot.dueToday.length}
+- overdue: ${planner.snapshot.overdue.length}
+- recent announcements: ${planner.snapshot.recentAnnouncements.length}
+- today's events: ${planner.snapshot.todayEvents.length}`;
+}
+
+async function streamWithFallback(args: Parameters<typeof streamText>[0]) {
+  try {
+    return streamText({ ...args, model: primaryModel(), stopWhen: stepCountIs(8) });
+  } catch (err) {
+    if (isRetryableError(err)) {
+      console.warn("Primary model failed, falling back:", String(err).slice(0, 120));
+      return streamText({ ...args, model: fallbackModel(), stopWhen: stepCountIs(8) });
+    }
+    throw err;
+  }
 }
 
 export async function GET(req: Request) {
@@ -247,47 +293,10 @@ export async function POST(req: Request) {
       tools,
     });
 
-    const result = streamText({
-      model: openrouter("z-ai/glm-4.5-air:free"),
+    const result = await streamWithFallback({
       messages: modelMessages,
       tools,
-      stopWhen: stepCountIs(8),
-      system: `You are Personal Canvas, an academic planning AI orchestrator.
-You are operating an agentic study workspace optimized for daily execution.
-Before updating the main workspace, call setWorkspaceDecision with:
-- goal
-- focus
-- view
-- panels
-- actions
-- reason
-- evidence
-
-Choose from these primary views when appropriate:
-- todayDesk for what the student should do now
-- weekMap for clustered workload across the next week
-- assignmentFocus for one assignment execution surface
-
-Then call the data tools that support that decision:
-- getTodayPlanSnapshot for todayDesk
-- getWeeklyWorkload for weekMap
-- getAssignmentExecutionContext for assignmentFocus
-- searchAssignments when the user is asking for a specific assignment but you need to identify it first
-
-Use tools whenever the user asks for concrete, up-to-date course data.
-Prefer tool-grounded answers over assumptions.
-When tool output includes "uiTarget", summarize it clearly so the UI can render and the user can understand.
-Keep the decision and data consistent. Do not choose a view whose required data you are not also fetching.
-If context is missing for the request, ask targeted follow-up questions.
-
-Current context:
-${context ?? "No context provided."}
-
-Reactive planner snapshot:
-- due today: ${planner.snapshot.dueToday.length}
-- overdue: ${planner.snapshot.overdue.length}
-- recent announcements: ${planner.snapshot.recentAnnouncements.length}
-- today's events: ${planner.snapshot.todayEvents.length}`,
+      system: systemPrompt(planner, context),
     });
 
     result.consumeStream();

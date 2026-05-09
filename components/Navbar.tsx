@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { MessageSquare, X } from "lucide-react";
 import { readLocalJson, writeLocalJson } from "@/lib/client-storage";
 
-const BOT_NAME_KEY = "canvas-bot-name";
+const BOT_NAME_KEY = "kairos-bot-name";
 
 function BotOnboardingSheet({ onDone }: { onDone: (name: string) => void }) {
   const [value, setValue] = useState("");
@@ -36,7 +36,7 @@ function BotOnboardingSheet({ onDone }: { onDone: (name: string) => void }) {
         animate={{ opacity: 0.4 }}
         exit={{ opacity: 0 }}
         className="absolute inset-0 bg-black"
-        onClick={() => onDone("Canvas")}
+        onClick={() => onDone("Kairos")}
       />
       <motion.div
         initial={{ y: "100%" }}
@@ -46,7 +46,7 @@ function BotOnboardingSheet({ onDone }: { onDone: (name: string) => void }) {
         className="relative z-10 w-full max-w-lg bg-card border border-border rounded-t-3xl p-8 pb-12 shadow-2xl mx-4 mb-0"
       >
         <button
-          onClick={() => onDone("Canvas")}
+          onClick={() => onDone("Kairos")}
           className="absolute top-4 right-4 p-2 rounded-full hover:bg-muted transition-colors text-muted-foreground"
         >
           <X className="w-4 h-4" />
@@ -124,7 +124,7 @@ export function Navbar() {
               onClick={() => router.push("/")}
               className="font-semibold text-base tracking-tight hover:text-primary transition-colors shrink-0"
             >
-              Personal Canvas
+              Kairos
             </button>
             <Link
               href="/"
