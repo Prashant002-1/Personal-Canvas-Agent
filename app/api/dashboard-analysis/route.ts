@@ -1,12 +1,8 @@
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { generateObject } from "ai";
+import { generateText } from "ai";
 import { z } from "zod";
+import { primaryModel, isRetryableError } from "@/lib/ai/provider";
 
 export const maxDuration = 60;
-
-const openrouter = createOpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY,
-});
 
 type Course = {
   name: string;
@@ -25,31 +21,67 @@ type RequestBody = {
 };
 
 const dashboardSchema = z.object({
-  briefing: z.string().describe("2 sentences max. State the student's most urgent situation and one concrete next action. No markdown."),
+  briefing: z.string(),
   priorities: z.array(z.object({
-    title: z.string().describe("5 words max"),
-    description: z.string().describe("20 words max. One specific action, not general advice."),
+    title: z.string(),
+    description: z.string(),
     urgency: z.enum(["high", "medium", "low"]),
-    course: z.string().describe("Course code only, e.g. CS430"),
-  })).describe("Exactly 3 priorities ordered by urgency. High = due within 3 days. Medium = due within 7 days. Low = everything else."),
-  insight: z.string().describe("1-2 sentences. A specific tactical observation about workload patterns or scheduling. Not generic advice."),
-  workloadWarning: z.string().optional().describe("Only include when 2+ high-urgency items cluster within 5 days. 1 sentence. Omit otherwise."),
+    course: z.string(),
+  })),
+  insight: z.string(),
+  workloadWarning: z.string().optional(),
 });
+
+async function runWithModel(modelFn: () => ReturnType<typeof primaryModel>, prompt: string) {
+  const { text } = await generateText({
+    model: modelFn(),
+    messages: [{ role: "user", content: prompt + "\n\nIMPORTANT: Respond ONLY with valid JSON. No markdown, no code fences, no preamble." }],
+  });
+  const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+  return JSON.parse(cleaned);
+}
+
+async function generateWithFallback(args: { schema: z.ZodTypeAny; prompt: string }) {
+  try {
+    const json = await runWithModel(primaryModel, args.prompt);
+    return args.schema.parse(json);
+  } catch (err) {
+    if (isRetryableError(err)) {
+      console.warn("Primary model failed, retrying:", String(err).slice(0, 120));
+      const json = await runWithModel(primaryModel, args.prompt);
+      return args.schema.parse(json);
+    }
+    throw err;
+  }
+}
 
 export async function POST(req: Request) {
   const { courses, upcomingAssignments } = (await req.json()) as RequestBody;
 
-  const { object } = await generateObject({
-    model: openrouter("arcee-ai/trinity-large-preview:free"),
+  const schemaDesc = `{
+  "briefing": "2 sentences max describing most urgent situation and one concrete next action",
+  "priorities": [{"title": "5 words max", "description": "20 words max, one specific action", "urgency": "high|medium|low", "course": "e.g. STAT 401"}],
+  "insight": "1-2 sentences, tactical observation about workload patterns",
+  "workloadWarning": "include only if 2+ high-urgency items in 5 days, otherwise omit"
+}`;
+
+  const object = await generateWithFallback({
     schema: dashboardSchema,
-    prompt: `You are an expert academic AI assistant. Analyze this student's academic landscape and provide a structured daily briefing.
+    prompt: `You are an expert academic AI assistant. Analyze this student's academic landscape.
 
-Courses: ${courses.map((course) => `${course.name} (${course.code})`).join(", ")}
+Courses: ${courses.map((c) => `${c.name} (${c.code})`).join(", ")}
+Upcoming: ${upcomingAssignments.map((a) => `${a.name} in ${a.course_code} (Due: ${a.due_at ? new Date(a.due_at).toLocaleDateString() : "No due date"})`).join("; ")}
 
-Upcoming Assignments:
-${upcomingAssignments.map((assignment) => `- ${assignment.name} in ${assignment.course_code} (Due: ${assignment.due_at ? new Date(assignment.due_at).toLocaleDateString() : "No due date"})`).join("\n")}
+Return exactly this JSON structure:
+${schemaDesc}
 
-Provide a helpful, personalized analysis. Be specific, not generic. Return plain text only — no markdown formatting, no asterisks, no bullet symbols, no headers.`,
+Rules:
+- Exactly 3 priorities ordered by urgency
+- high = due within 3 days, medium = within 7 days, low = everything else
+- briefing: concrete, not generic. State what's due and one action.
+- insight: tactical, not generic advice
+- workloadWarning: omit unless 2+ high-urgency items within 5 days
+- no preamble, no markdown, just the JSON object`,
   });
 
   return Response.json(object);
