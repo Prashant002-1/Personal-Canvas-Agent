@@ -1,3 +1,5 @@
+> **Update: now evolving into [Atlas LMS](https://github.com/Prashant002-1/Atlas-LMS).** Personal Canvas was the foundation and motivation for Atlas, a full AI-native LMS. This is where the architecture and the idea began.
+
 # Personal Canvas
 
 An AI-powered academic planning assistant built on top of Canvas LMS data. Not a chatbot. Not a planner. A partner that knows your courses, remembers you, and tells you what to do next.
